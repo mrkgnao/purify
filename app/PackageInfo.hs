@@ -5,6 +5,7 @@
 module PackageInfo
   ( lookupPackage
   , getMasterCommit
+  , Package(..)
   ) where
 
 import           Data.Text           (Text)
@@ -13,13 +14,18 @@ import           Network.HTTP.Simple
 import           Text.HTML.DOM       (sinkDoc)
 import           Text.XML.Cursor
 
+data Package = Package String [String]
+
+noDep :: String -> Package
+noDep url = Package url []
+
 lookupPackage :: String -- ^ package name
-              -> IO (String, [String]) -- ^ repo URL, dependencies
+              -> IO Package -- ^ repo URL, dependencies
 
 -- Some hard-coded hacks for packages that don't appear on Pursuit. It
 -- would be great to get rid of these.
-lookupPackage "purescript-dom-indexed" = return ("https://github.com/slamdata/purescript-dom-indexed", [])
-lookupPackage "purescript-fork" = return ("https://github.com/slamdata/purescript-fork", [])
+lookupPackage "purescript-dom-indexed" = pure (noDep "https://github.com/slamdata/purescript-dom-indexed")
+lookupPackage "purescript-fork" = pure (noDep "https://github.com/slamdata/purescript-fork")
 
 lookupPackage name = do
   let url = "https://pursuit.purescript.org/packages/" ++ name
@@ -35,14 +41,14 @@ lookupPackage name = do
 
   repo <-
     case repos of
-      [] -> error ("Could not parse repo from: " ++ url)
-      x:_ -> return x
+      []  -> error ("Error cloning repo from " ++ url ++ ", does it exist?")
+      x:_ -> pure x
 
   let deps = cursor
          $// element "a"
          >=> attributeIs "class" "deplink__link"
          &// content
-  return (T.unpack repo, map T.unpack deps)
+  pure (Package (T.unpack repo) (map T.unpack deps))
 
 hasContent :: Text -> Axis
 hasContent t c
@@ -68,5 +74,5 @@ getMasterCommit repo = do
              >=> attributeIs "class" "commit-tease commit-loader"
              >=> attribute "src"
   case oldStyle ++ newStyle of
-    [x] -> return (T.unpack (T.reverse (T.takeWhile (/= '/') (T.reverse x))))
-    _ -> error ("Could not find commit from " ++ repo)
+    [x] -> pure (T.unpack (T.reverse (T.takeWhile (/= '/') (T.reverse x))))
+    _   -> error ("Could not find commit from " ++ repo)
