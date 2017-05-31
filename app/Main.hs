@@ -30,7 +30,6 @@ import           Control.Monad.IO.Class
 import           Control.Monad.Trans.State.Strict
 
 import           PackageInfo
-import qualified Paths_purify
 
 data Dep = Dep
   { depRepo    :: String
@@ -101,7 +100,7 @@ main = do
           if null args
             then purify [] config False
             else join $ fmap snd $ simpleOptions
-              $(simpleVersion Paths_purify.version)
+                 "VERSION"
               "purify build tool for PureScript"
               "Fully reproducible builds for PureScript"
               (pure ()) $ do
@@ -113,6 +112,7 @@ main = do
               addCommand "add-deps" "Add dependencies to purify.yaml" id $ addDeps
                   <$> pure config
                   <*> some (strArgument (metavar "PACKAGE-NAME"))
+                  <*> switch (long "implicit-prefix" <> help "Add the purescript- prefix automatically")
 
 data FetchState = Pending | Fetched
 
@@ -280,11 +280,15 @@ ide =
     ] >>=
   exitWith
 
-addDeps :: Purify -> [String] -> IO ()
-addDeps (Purify outFile deps) newDeps =
-  void (runStateT (mapM_ (addDep outFile []) newDeps) depsMap)
+addDeps :: Purify -> [String] -> Bool -> IO ()
+addDeps (Purify outFile deps) newDeps autoprefix =
+  void (runStateT (mapM_ (addDep outFile []) newDeps') depsMap)
   where
-  depsMap = Map.unions (map (\dep -> Map.singleton (depName dep) dep) deps)
+    depsMap = Map.unions (map (\dep -> Map.singleton (depName dep) dep) deps)
+    newDeps' =
+      if autoprefix
+        then map ("purescript-" ++) newDeps
+        else newDeps
 
 addDep :: FilePath -- ^ out file
        -> [String] -- ^ call stack, to avoid cycles
