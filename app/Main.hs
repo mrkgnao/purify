@@ -18,7 +18,8 @@ import           Options.Applicative.Simple
 
 import           System.Directory
 import           System.Environment
-import           System.Exit
+import           System.Exit                               hiding (die)
+import qualified System.Exit
 import qualified System.FilePath.Glob                      as Glob
 import qualified System.FSNotify                           as FS
 import           System.Process
@@ -39,7 +40,7 @@ import           Data.Text.Prettyprint.Doc.Render.Terminal
 import           Data.Monoid                               (mconcat)
 import           Debug.Trace
 
-die' = die . T.unpack
+die = System.Exit.die . T.unpack
 
 data Dep = Dep
   { depRepo    :: Text
@@ -67,7 +68,10 @@ instance FromJSON Dep where
     o <- parseJSON j
     repo <- o .: "repo"
     commit <- o .: "commit"
-    let name' = T.takeWhile (/='.') (T.reverse (T.takeWhile (/='/') (T.reverse repo)))
+    let name' =
+          T.takeWhile
+            (/= '.')
+            (T.reverse (T.takeWhile (/= '/') (T.reverse repo)))
     name <- o .:? "name" .!= name'
     mmodules <- o .:? "modules"
     deps <- o .:? "deps" .!= []
@@ -100,11 +104,11 @@ main :: IO ()
 main = do
   exists <- doesFileExist "purify.yaml"
   if not exists
-    then die' "Expected purify.yaml in the directory of your PureScript project."
+    then die "Expected purify.yaml in the directory of your PureScript project."
     else do
       result <- decodeFileEither "purify.yaml"
       case result of
-        Left _ -> die' "Couldn't parse purify.yaml file."
+        Left _ -> die "Couldn't parse purify.yaml file."
         Right config -> do
           args <- getArgs
           if null args
@@ -122,7 +126,7 @@ main = do
               addCommand "ide" "Launch IDE interaction" id $ pure ide
               addCommand "add-deps" "Add dependencies to purify.yaml" id $ addDeps
                   <$> pure config
-                  <*> undefined -- some (strArgument (metavar "PACKAGE-NAME"))
+                  <*> fmap (map T.pack) (some (strArgument (metavar "PACKAGE-NAME")))
                   <*> switch (long "implicit-prefix" <> help "Add the purescript- prefix automatically")
 
 data FetchState = Pending | Fetched
@@ -139,7 +143,7 @@ purify inputFiles config fileWatch verbose = do
         nubBy (on (==) depName) (extraDeps config) /= extraDeps config
   when
     (extraDepMismatch || extraDepNameMismatch)
-    (die' "Dependencies contain duplicates.")
+    (die "Dependencies contain duplicates.")
   forM_ (extraDeps config) $ \dep -> do
     let depDir = T.pack depDir'
         depDir' = getDepDir dep
@@ -156,7 +160,7 @@ purify inputFiles config fileWatch verbose = do
                   (["clone"] <> quietness <> [depRepo dep, depDir])
               case ok of
                 ExitFailure {} ->
-                  die'
+                  die
                     ("Failed to clone package " <> depName dep <> " from " <>
                      depRepo dep)
                 _ -> checkout
@@ -198,13 +202,13 @@ purify inputFiles config fileWatch verbose = do
                   fres $
                   fetch shortDepCommit Fetched
               Fetched ->
-                die'
+                die
                   ("Checking out version failed for " <> depName dep <> ": " <>
                    depCommit dep)
     clone
   srcExists <- doesDirectoryExist "src/"
   if not srcExists
-    then die'
+    then die
            "There is no src/ directory in this project. Please create one and put your PureScript files in there."
     else let dirs =
                map
@@ -309,7 +313,7 @@ purifyDirs inputFiles config dirs = do
       putStrLn ("Output bundled to " <> outputFile config)
 
 withErrorMsg :: Text -> ExitCode -> IO a -> IO a
-withErrorMsg msg (ExitFailure _) _ = die' msg
+withErrorMsg msg (ExitFailure _) _ = die msg
 withErrorMsg _ _ act               = act
 
 whenFailure :: ExitCode -> IO () -> IO ()
