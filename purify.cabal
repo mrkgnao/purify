@@ -17,7 +17,7 @@ executable purify
   hs-source-dirs:      app
   main-is:             Main.hs
   other-modules:       PackageInfo
-  ghc-options:         -Wall -threaded -O
+  ghc-options:         -threaded -O
   build-depends:       base
                      , aeson
                      , containers
@@ -34,4 +34,6 @@ executable purify
                      , transformers
                      , xml-conduit
                      , yaml
+                     , prettyprinter
+                     , prettyprinter-ansi-terminal
   default-language:    Haskell2010

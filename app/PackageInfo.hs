@@ -8,18 +8,22 @@ module PackageInfo
   , Package(..)
   ) where
 
-import           Data.Text           (Text)
-import qualified Data.Text           as T
 import           Network.HTTP.Simple
 import           Text.HTML.DOM       (sinkDoc)
 import           Text.XML.Cursor
 
-data Package = Package String [String]
+import           Data.Text           (Text)
+import qualified Data.Text           as T
+import qualified Data.Text.IO        as T
 
-noDep :: String -> Package
+import           Data.Monoid         ((<>))
+
+data Package = Package Text [Text]
+
+noDep :: Text -> Package
 noDep url = Package url []
 
-lookupPackage :: String -- ^ package name
+lookupPackage :: Text -- ^ package name
               -> IO Package -- ^ repo URL, dependencies
 
 -- Some hard-coded hacks for packages that don't appear on Pursuit. It
@@ -28,8 +32,8 @@ lookupPackage "purescript-dom-indexed" = pure (noDep "https://github.com/slamdat
 lookupPackage "purescript-fork" = pure (noDep "https://github.com/slamdata/purescript-fork")
 
 lookupPackage name = do
-  let url = "https://pursuit.purescript.org/packages/" ++ name
-  req <- parseRequest url
+  let url = "https://pursuit.purescript.org/packages/" <> name
+  req <- parseRequest (T.unpack url)
   doc <- httpSink req $ const sinkDoc
   let cursor = fromDocument doc
       repos = cursor
@@ -41,14 +45,14 @@ lookupPackage name = do
 
   repo <-
     case repos of
-      []  -> error ("Error cloning repo from " ++ url ++ ", does it exist?")
+      []  -> error (T.unpack $ "Error cloning repo from " <> url <> ", does it exist?")
       x:_ -> pure x
 
   let deps = cursor
          $// element "a"
          >=> attributeIs "class" "deplink__link"
          &// content
-  pure (Package (T.unpack repo) (map T.unpack deps))
+  pure (Package repo deps)
 
 hasContent :: Text -> Axis
 hasContent t c
@@ -59,10 +63,10 @@ hasContent t c
 --
 -- Technically will take whatever is the displayed branch on the
 -- Github UI
-getMasterCommit :: String -- ^ repo URL
-                -> IO String
+getMasterCommit :: Text -- ^ repo URL
+                -> IO Text
 getMasterCommit repo = do
-  req <- parseRequest repo
+  req <- parseRequest (T.unpack repo)
   res <- httpSink req (const sinkDoc)
   let cursor = fromDocument res
       oldStyle = cursor
@@ -73,6 +77,6 @@ getMasterCommit repo = do
              $// element "include-fragment"
              >=> attributeIs "class" "commit-tease commit-loader"
              >=> attribute "src"
-  case oldStyle ++ newStyle of
-    [x] -> pure (T.unpack (T.reverse (T.takeWhile (/= '/') (T.reverse x))))
-    _   -> error ("Could not find commit from " ++ repo)
+  case oldStyle <> newStyle of
+    [x] -> pure (T.reverse (T.takeWhile (/= '/') (T.reverse x)))
+    _   -> error (T.unpack $ "Could not find commit from " <> repo)
