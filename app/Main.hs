@@ -42,6 +42,9 @@ import           Debug.Trace
 
 die = System.Exit.die . T.unpack
 
+renderP :: Doc AnsiTerminal -> IO ()
+renderP = T.putStrLn . renderStrict . layoutPretty defaultLayoutOptions
+
 data Dep = Dep
   { depRepo    :: Text
   , depCommit  :: Text
@@ -108,13 +111,13 @@ main = do
     else do
       result <- decodeFileEither "purify.yaml"
       case result of
-        Left _ -> die "Couldn't parse purify.yaml file."
+        Left err -> die "Couldn't parse purify.yaml file."
         Right config -> do
           args <- getArgs
           if null args
             then purify [] config False False
             else join $ fmap snd $ simpleOptions
-                 "VERSION"
+              "VERSION"
               "purify build tool for PureScript"
               "Fully reproducible builds for PureScript"
               (pure ()) $ do
@@ -130,6 +133,12 @@ main = do
                   <*> switch (long "implicit-prefix" <> help "Add the purescript- prefix automatically")
 
 data FetchState = Pending | Fetched
+
+gitCmd = rawSystemLog "git"
+pursCmd = rawSystemLog "purs"
+
+gitRead = readProcess "git"
+pursRead = readProcess "purs"
 
 purify :: [FilePath] -> Purify -> Bool -> Bool ->  IO ()
 purify inputFiles config fileWatch verbose = do
@@ -149,53 +158,42 @@ purify inputFiles config fileWatch verbose = do
         depDir' = getDepDir dep
         gitDir = depDir
     exists <- doesDirectoryExist depDir'
-    let clone =
-          if exists
-            then checkout
-            else do
-              logPhase ("Cloning " <> depName dep <> " ...")
-              ok <-
-                rawSystemLog
-                  "git"
-                  (["clone"] <> quietness <> [depRepo dep, depDir])
-              case ok of
-                ExitFailure {} ->
-                  die
-                    ("Failed to clone package " <> depName dep <> " from " <>
-                     depRepo dep)
-                _ -> checkout
+    let clone
+          | exists = do checkout
+          | otherwise = do
+            logPhase ("Cloning " <> depName dep <> " ...")
+            ok <- gitCmd (["clone"] <> quietness <> [depRepo dep, depDir])
+            withErrorMsg
+              ("Failed to clone package " <> depName dep <> " from " <>
+               depRepo dep)
+              ok
+              checkout
         checkout = do
           tags <-
             fmap
               (map T.pack . lines)
-              (readProcess
-                 "git"
-                 ["-C", T.unpack gitDir, "tag", "--points-at", "HEAD"]
-                 "")
+              (gitRead ["-C", T.unpack gitDir, "tag", "--points-at", "HEAD"] "")
           unless (depCommit dep `elem` tags) $ do
             cur <-
               fmap T.pack $
-              readProcess "git" ["-C", T.unpack gitDir, "rev-parse", "HEAD"] ""
+              gitRead ["-C", T.unpack gitDir, "rev-parse", "HEAD"] ""
             let commit = T.takeWhile (const True) cur
                 shortDepCommit = T.take 7 (depCommit dep)
             unless (commit == depCommit dep) (fetch shortDepCommit Pending)
         fetch shortDepCommit fetchState = do
           case fetchState of
             Pending ->
-              T.putStrLn
-                ("Checking out " <> depName dep <> " (" <> shortDepCommit <>
-                 ") ...")
+              renderP
+                (color Blue "Checking out " <> pretty (depName dep) <> " (" <> color Yellow (pretty shortDepCommit) <> ") ...")
             _ -> pure ()
-          res <-
-            rawSystemLog
-              "git"
+          result <-
+            gitCmd
               (["-C", gitDir, "checkout", "-f"] <> quietness <> [depCommit dep])
-          whenFailure res $
+          whenFailure result $
             case fetchState of
               Pending -> do
                 putStrLn "Failed to checkout, fetching latest from remote ..."
-                fres <-
-                  rawSystemLog "git" (["-C", gitDir, "fetch"] <> quietness)
+                fres <- gitCmd (["-C", gitDir, "fetch"] <> quietness)
                 withErrorMsg
                   ("Tried to fetch " <> depCommit dep <>
                    " from the remote, but that failed too. Giving up.")
@@ -208,8 +206,9 @@ purify inputFiles config fileWatch verbose = do
     clone
   srcExists <- doesDirectoryExist "src/"
   if not srcExists
-    then die
-           "There is no src/ directory in this project. Please create one and put your PureScript files in there."
+    then die $
+         "There is no src/ directory in this project." <>
+         "Please create one and put your PureScript files in there."
     else let dirs =
                map
                  (<> "/src")
@@ -218,9 +217,10 @@ purify inputFiles config fileWatch verbose = do
                     getDepDir
                     (filter (isNothing . depModules) (extraDeps config)))
              buildCmd = purifyDirs inputFiles config dirs
-         in if fileWatch
-              then watchDirs dirs buildCmd
-              else buildCmd
+             result
+               | fileWatch = watchDirs dirs buildCmd
+               | otherwise = buildCmd
+         in result
 
 rawSystemLog :: Text -> [Text] -> IO ExitCode
 rawSystemLog s args = do
@@ -233,7 +233,7 @@ rawSystemLog s args = do
                in T.unwords beg <> " ... " <> T.unwords end
   -- print (length (unwords args))
   -- print args
-  T.putStrLn ("Running " <> s <> " " <> args')
+  renderP (color Blue "Running " <> pretty s <> " " <> pretty args')
   rawSystem (T.unpack s) (map T.unpack args)
 
 ignore (FS.Added ('.' : _) _)    = True
@@ -244,25 +244,23 @@ ignore _                         = False
 watchDirs :: [FilePath] -> IO () -> IO ()
 watchDirs dirs inner = do
   toRunVar <- newTVarIO True -- do an initial build immediately
-  FS.withManager
-    (\manager -> do
-       forM_ dirs $ \dir ->
-         FS.watchTree
-           manager
-           dir
-           (\x -> trace (show x) (not (ignore x)))
-           (const (atomically (writeTVar toRunVar True)))
-       forever
-         (do atomically
-               (do toRun <- readTVar toRunVar
-                   check toRun
-                   writeTVar toRunVar False)
-             putStrLn "Starting build"
-             eres <- tryAny inner
-             case eres of
-               Left e   -> print e
-               Right () -> pure ()
-             putStrLn "Build command finished, waiting for file changes\n"))
+  FS.withManager $ \manager -> do
+    forM_ dirs $ \dir ->
+      FS.watchTree
+        manager
+        dir (const True)
+        (const (atomically (writeTVar toRunVar True)))
+    forever
+      (do atomically
+            (do toRun <- readTVar toRunVar
+                check toRun
+                writeTVar toRunVar False)
+          putStrLn "Starting build"
+          eres <- tryAny inner
+          case eres of
+            Left e   -> print e
+            Right () -> pure ()
+          putStrLn "Build command finished, waiting for file changes\n")
 
 getDepDir :: Dep -> FilePath
 getDepDir dep = T.unpack $ ".purify-work/extra-deps/" <> depName dep
@@ -294,12 +292,10 @@ purifyDirs inputFiles config dirs = do
   let allPurs = fmap T.pack $ inputFiles <> foundPurs <> explicitPurs
   logPhase ("Compiling " <> tshow (length allPurs) <> " modules ...")
   let outputDir = ".purify-work/js-output"
-  status <- rawSystemLog "purs" (["compile", "-o", outputDir] <> allPurs)
+  status <- pursCmd (["compile", "-o", outputDir] <> allPurs)
   withErrorMsg "Compile failed." status $ do
     logPhase "Bundling ..."
-    stat <-
-      rawSystemLog
-        "purs"
+    stat <- pursCmd
         [ "bundle"
         , ".purify-work/js-output/**/*.js"
         , "-m"
@@ -321,9 +317,7 @@ whenFailure (ExitFailure _) act = act
 whenFailure _ _                 = pure ()
 
 ide :: IO ()
-ide =
-  rawSystemLog
-    "purs"
+ide = pursCmd
     [ "ide"
     , "server"
     , "--output-directory"
@@ -370,5 +364,5 @@ addDep outFile depStack newDep = do
     Just ed -> mapM_ (addDep outFile newStack) (depDeps ed)
 
 logPhase :: Text -> IO ()
-logPhase = T.putStrLn . renderStrict . layoutPretty defaultLayoutOptions . color Red . pretty
+logPhase = T.putStrLn . renderStrict . layoutPretty defaultLayoutOptions . color Blue . pretty
 
