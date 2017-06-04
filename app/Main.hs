@@ -119,7 +119,7 @@ data FetchState = Pending | Fetched
 
 purify :: [FilePath] -> Purify -> Bool -> Bool ->  IO ()
 purify inputFiles config fileWatch verbose = do
-  let quietness = if verbose then "-v" else "-q"
+  let quietness = if verbose then [] else ["-q"]
   createDirectoryIfMissing True ".purify-work/extra-deps"
   let extraDepMismatch = nub (extraDeps config) /= extraDeps config
       extraDepNameMismatch = nubBy (on (==) depName) (extraDeps config) /= extraDeps config
@@ -133,8 +133,8 @@ purify inputFiles config fileWatch verbose = do
           if exists
             then checkout
             else do
-              putStrLn ("Cloning " ++ depName dep ++ " ...")
-              ok <- rawSystem "git" ["clone", quietness, depRepo dep, depDir]
+              logPhase ("Cloning " ++ depName dep ++ " ...")
+              ok <- rawSystemLog "git" (["clone"] ++ quietness ++ [depRepo dep, depDir])
               case ok of
                 ExitFailure {} ->
                   die
@@ -159,14 +159,13 @@ purify inputFiles config fileWatch verbose = do
                  depName dep ++ " (" ++ shortDepCommit ++ ") ...")
             _ -> pure ()
           res <-
-            rawSystem
-              "git"
-              ["-C", gitDir, "checkout", "-f", quietness, depCommit dep]
+            rawSystemLog
+              "git" (["-C", gitDir, "checkout", "-f"] ++ quietness ++ [depCommit dep])
           whenFailure res $
               case fetchState of
                 Pending -> do
                   putStrLn "Failed to checkout, fetching latest from remote ..."
-                  fres <- rawSystem "git" ["-C", gitDir, "fetch", quietness]
+                  fres <- rawSystemLog "git" (["-C", gitDir, "fetch"] ++ quietness)
                   withErrorMsg
                     ("Tried to fetch " ++
                      depCommit dep ++
@@ -193,6 +192,23 @@ purify inputFiles config fileWatch verbose = do
          in if fileWatch
               then watchDirs dirs buildCmd
               else buildCmd
+
+logPhase :: String -> IO ()
+logPhase s = putStrLn (">>> " ++ s)
+
+rawSystemLog :: String -> [String] -> IO ExitCode
+rawSystemLog s args = do
+  let bound = 200
+      args' =
+        if length (unwords args) < bound
+          then unwords args
+          else let beg = take 3 args
+                   end = take 1 (reverse args)
+               in unwords beg ++ " ... " ++ unwords end
+  -- print (length (unwords args))
+  -- print args
+  putStrLn ("Running " ++ s ++ " " ++ args')
+  rawSystem s args
 
 watchDirs :: [FilePath] -> IO () -> IO ()
 watchDirs dirs inner = do
@@ -239,15 +255,15 @@ purifyDirs inputFiles config dirs = do
           replace []       = []
 
   let allPurs = inputFiles ++ foundPurs ++ explicitPurs
-  putStrLn ("Compiling " ++ show (length allPurs) ++ " modules ...")
+  logPhase ("Compiling " ++ show (length allPurs) ++ " modules ...")
 
   let outputDir = ".purify-work/js-output"
-  status <- rawSystem "purs" (["compile", "-o", outputDir] ++ allPurs)
+  status <- rawSystemLog "purs" (["compile", "-o", outputDir] ++ allPurs)
 
   withErrorMsg "Compile failed." status $ do
-      putStrLn "Bundling ..."
+      logPhase "Bundling ..."
       stat <-
-        rawSystem
+        rawSystemLog
           "purs"
           [ "bundle"
           , ".purify-work/js-output/**/*.js"
@@ -271,7 +287,7 @@ whenFailure _ _                 = pure ()
 
 ide :: IO ()
 ide =
-  rawSystem
+  rawSystemLog
     "purs"
     [ "ide"
     , "server"
