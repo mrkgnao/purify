@@ -40,7 +40,10 @@ import           Data.Text.Prettyprint.Doc.Render.Terminal
 import           Data.Monoid                               (mconcat)
 import           Debug.Trace
 
+import           Control.Concurrent.PooledIO.Independent   as Pool
+
 die = System.Exit.die . T.unpack
+for = flip map
 
 renderP :: Doc AnsiTerminal -> IO ()
 renderP = T.putStrLn . renderStrict . layoutPretty defaultLayoutOptions
@@ -153,16 +156,17 @@ purify inputFiles config fileWatch verbose = do
   when
     (extraDepMismatch || extraDepNameMismatch)
     (die "Dependencies contain duplicates.")
-  forM_ (extraDeps config) $ \dep -> do
+  Pool.runLimited 5 $ for (extraDeps config) $ \dep -> do
     let depDir = T.pack depDir'
         depDir' = getDepDir dep
         gitDir = depDir
     exists <- doesDirectoryExist depDir'
     let clone
-          | exists = do checkout
+          | exists = checkout
           | otherwise = do
             logPhase ("Cloning " <> depName dep <> " ...")
             ok <- gitCmd (["clone"] <> quietness <> [depRepo dep, depDir])
+            logPhase ("Cloned " <> depName dep <> ".")
             withErrorMsg
               ("Failed to clone package " <> depName dep <> " from " <>
                depRepo dep)
@@ -233,7 +237,7 @@ rawSystemLog s args = do
                in T.unwords beg <> " ... " <> T.unwords end
   -- print (length (unwords args))
   -- print args
-  renderP (color Blue "Running " <> pretty s <> " " <> pretty args')
+  -- renderP (color Blue "Running " <> pretty s <> " " <> pretty args')
   rawSystem (T.unpack s) (map T.unpack args)
 
 ignore (FS.Added ('.' : _) _)    = True

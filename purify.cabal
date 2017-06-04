@@ -36,4 +36,6 @@ executable purify
                      , yaml
                      , prettyprinter
                      , prettyprinter-ansi-terminal
+                     , pooled-io
+                     , stm >= 2.4
   default-language:    Haskell2010
