@@ -83,25 +83,25 @@ instance FromJSON Dep where
     deps <- o .:? "deps" .!= []
     pure (Dep repo commit name mmodules deps)
 
-data Purify = Purify
+data BuildUnit = BuildUnit
   { outputFile :: FilePath
   , extraDeps  :: [Dep]
   } deriving (Eq,Show)
 
-instance ToJSON Purify where
-  toJSON (Purify outFile deps) = object
+instance ToJSON BuildUnit where
+  toJSON (BuildUnit outFile deps) = object
     [ "output-file" .= outFile
     , "extra-deps" .= deps
     ]
 
-instance FromJSON Purify where
+instance FromJSON BuildUnit where
   parseJSON j = do
     o <- parseJSON j
     outputFile <- o .: "output-file"
     extraDeps <-
       ((o .: "extra-deps") <|>
        fmap flattenDeps (o .: "extra-deps")) {-backwards compat-}
-    pure (Purify {..})
+    pure (BuildUnit {..})
     where
       flattenDeps :: Map Text Dep -> [Dep]
       flattenDeps = map (\(k, v) -> v { depName = k }) . Map.toList
@@ -118,13 +118,13 @@ main = do
         Right config -> do
           args <- getArgs
           if null args
-            then purify [] config False False
+            then build [] config False False
             else join $ fmap snd $ simpleOptions
               "VERSION"
               "purify build tool for PureScript"
               "Fully reproducible builds for PureScript"
               (pure ()) $ do
-              addCommand "build" "Build code" id $ purify
+              addCommand "build" "Build code" id $ build
                   <$> pure []
                   <*> pure config
                   <*> switch (long "file-watch" <> help "Auto-rebuild on file change")
@@ -143,8 +143,8 @@ pursCmd = rawSystemLog "purs"
 gitRead = readProcess "git"
 pursRead = readProcess "purs"
 
-purify :: [FilePath] -> Purify -> Bool -> Bool ->  IO ()
-purify inputFiles config fileWatch verbose = do
+build :: [FilePath] -> BuildUnit -> Bool -> Bool ->  IO ()
+build inputFiles config fileWatch verbose = do
   let quietness =
         if verbose
           then []
@@ -272,7 +272,7 @@ getDepDir dep = T.unpack $ ".purify-work/extra-deps/" <> depName dep
 tshow = T.pack . show
 
 purifyDirs :: [FilePath]
-           -> Purify
+           -> BuildUnit
            -> [FilePath]
            -> IO ()
 purifyDirs inputFiles config dirs = do
@@ -331,8 +331,8 @@ ide = pursCmd
     ] >>=
   exitWith
 
-addDeps :: Purify -> [Text] -> Bool -> IO ()
-addDeps (Purify outFile deps) newDeps autoprefix =
+addDeps :: BuildUnit -> [Text] -> Bool -> IO ()
+addDeps (BuildUnit outFile deps) newDeps autoprefix =
   void (runStateT (mapM_ (addDep outFile []) newDeps') depsMap)
   where
     depsMap = Map.unions (map (\dep -> Map.singleton (depName dep) dep) deps)
@@ -363,7 +363,7 @@ addDep outFile depStack newDep = do
         , depDeps = deps
         }))
       deps' <- get
-      liftIO (encodeFile "purify.yaml" (Purify outFile (Map.elems deps')))
+      liftIO (encodeFile "purify.yaml" (BuildUnit outFile (Map.elems deps')))
       mapM_ (addDep outFile newStack) deps
     Just ed -> mapM_ (addDep outFile newStack) (depDeps ed)
 
