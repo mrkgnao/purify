@@ -156,58 +156,68 @@ build inputFiles config fileWatch verbose = do
   when
     (extraDepMismatch || extraDepNameMismatch)
     (die "Dependencies contain duplicates.")
-  Pool.runLimited 5 $ for (extraDeps config) $ \dep -> do
-    let depDir = T.pack depDir'
-        depDir' = getDepDir dep
-        gitDir = depDir
-    exists <- doesDirectoryExist depDir'
-    let clone
-          | exists = checkout
-          | otherwise = do
-            logPhase ("Cloning " <> depName dep <> " ...")
-            ok <- gitCmd (["clone"] <> quietness <> [depRepo dep, depDir])
-            logPhase ("Cloned " <> depName dep <> ".")
-            withErrorMsg
-              ("Failed to clone package " <> depName dep <> " from " <>
-               depRepo dep)
-              ok
-              checkout
-        checkout = do
-          tags <-
-            fmap
-              (map T.pack . lines)
-              (gitRead ["-C", T.unpack gitDir, "tag", "--points-at", "HEAD"] "")
-          unless (depCommit dep `elem` tags) $ do
-            cur <-
-              fmap T.pack $
-              gitRead ["-C", T.unpack gitDir, "rev-parse", "HEAD"] ""
-            let commit = T.takeWhile (const True) cur
-                shortDepCommit = T.take 7 (depCommit dep)
-            unless (commit == depCommit dep) (fetch shortDepCommit Pending)
-        fetch shortDepCommit fetchState = do
-          case fetchState of
-            Pending ->
-              renderP
-                (color Blue "Checking out " <> pretty (depName dep) <> " (" <> color Yellow (pretty shortDepCommit) <> ") ...")
-            _ -> pure ()
-          result <-
-            gitCmd
-              (["-C", gitDir, "checkout", "-f"] <> quietness <> [depCommit dep])
-          whenFailure result $
+  let numDeps = length (extraDeps config)
+  Pool.runLimited 5 $
+    for (zip [1 ..] (extraDeps config)) $ \(i, dep) -> do
+      let depDir = T.pack depDir'
+          depDir' = getDepDir dep
+          gitDir = depDir
+      exists <- doesDirectoryExist depDir'
+      let clone
+            | exists = checkout
+            | otherwise = do
+              logPhase
+                ("Cloning " <> depName dep <> " ... (" <> tshow i <> " / " <>
+                 tshow numDeps <>
+                 ")")
+              ok <- gitCmd (["clone"] <> quietness <> [depRepo dep, depDir])
+              logPhase ("Cloned " <> depName dep <> ".")
+              withErrorMsg
+                ("Failed to clone package " <> depName dep <> " from " <>
+                 depRepo dep)
+                ok
+                checkout
+          checkout = do
+            tags <-
+              fmap
+                (map T.pack . lines)
+                (gitRead
+                   ["-C", T.unpack gitDir, "tag", "--points-at", "HEAD"]
+                   "")
+            unless (depCommit dep `elem` tags) $ do
+              cur <-
+                fmap T.pack $
+                gitRead ["-C", T.unpack gitDir, "rev-parse", "HEAD"] ""
+              let commit = T.takeWhile (const True) cur
+                  shortDepCommit = T.take 7 (depCommit dep)
+              unless (commit == depCommit dep) (fetch shortDepCommit Pending)
+          fetch shortDepCommit fetchState = do
             case fetchState of
-              Pending -> do
-                putStrLn "Failed to checkout, fetching latest from remote ..."
-                fres <- gitCmd (["-C", gitDir, "fetch"] <> quietness)
-                withErrorMsg
-                  ("Tried to fetch " <> depCommit dep <>
-                   " from the remote, but that failed too. Giving up.")
-                  fres $
-                  fetch shortDepCommit Fetched
-              Fetched ->
-                die
-                  ("Checking out version failed for " <> depName dep <> ": " <>
-                   depCommit dep)
-    clone
+              Pending ->
+                renderP
+                  (color Blue "Checking out " <> pretty (depName dep) <> " (" <>
+                   color Yellow (pretty shortDepCommit) <>
+                   ") ...")
+              _ -> pure ()
+            result <-
+              gitCmd
+                (["-C", gitDir, "checkout", "-f"] <> quietness <>
+                 [depCommit dep])
+            whenFailure result $
+              case fetchState of
+                Pending -> do
+                  putStrLn "Failed to checkout, fetching latest from remote ..."
+                  fres <- gitCmd (["-C", gitDir, "fetch"] <> quietness)
+                  withErrorMsg
+                    ("Tried to fetch " <> depCommit dep <>
+                     " from the remote, but that failed too. Giving up.")
+                    fres $
+                    fetch shortDepCommit Fetched
+                Fetched ->
+                  die
+                    ("Checking out version failed for " <> depName dep <> ": " <>
+                     depCommit dep)
+      clone
   srcExists <- doesDirectoryExist "src/"
   if not srcExists
     then die $
@@ -342,11 +352,11 @@ addDeps (BuildUnit outFile deps) newDeps autoprefix =
         else newDeps
 
 addDep :: FilePath -- ^ out file
-       -> [Text] -- ^ call stack, to avoid cycles
-       -> Text   -- ^ new dep
+       -> [Text]   -- ^ call stack, to avoid cycles
+       -> Text     -- ^ new dep
        -> StateT (Map Text Dep) IO ()
 addDep _ depStack newDep
-  | newDep `elem` depStack = error ("Dep cycle detected: " <> show (newDep : depStack))
+  | newDep `elem` depStack = error ("Dependency cycle detected: " <> show (newDep : depStack))
 addDep outFile depStack newDep = do
   let newStack = newDep : depStack
   allDeps <- get
