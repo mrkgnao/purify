@@ -98,7 +98,7 @@ main = do
         Right config -> do
           args <- getArgs
           if null args
-            then purify [] config False
+            then purify [] config False False
             else join $ fmap snd $ simpleOptions
                  "VERSION"
               "purify build tool for PureScript"
@@ -108,6 +108,7 @@ main = do
                   <$> pure []
                   <*> pure config
                   <*> switch (long "file-watch" <> help "Auto-rebuild on file change")
+                  <*> switch (long "verbose" <> help "Show git log")
               addCommand "ide" "Launch IDE interaction" id $ pure ide
               addCommand "add-deps" "Add dependencies to purify.yaml" id $ addDeps
                   <$> pure config
@@ -116,8 +117,9 @@ main = do
 
 data FetchState = Pending | Fetched
 
-purify :: [FilePath] -> Purify -> Bool -> IO ()
-purify inputFiles config fileWatch = do
+purify :: [FilePath] -> Purify -> Bool -> Bool ->  IO ()
+purify inputFiles config fileWatch verbose = do
+  let quietness = if verbose then "-v" else "-q"
   createDirectoryIfMissing True ".purify-work/extra-deps"
   let extraDepMismatch = nub (extraDeps config) /= extraDeps config
       extraDepNameMismatch = nubBy (on (==) depName) (extraDeps config) /= extraDeps config
@@ -132,7 +134,7 @@ purify inputFiles config fileWatch = do
             then checkout
             else do
               putStrLn ("Cloning " ++ depName dep ++ " ...")
-              ok <- rawSystem "git" ["clone", "-q", depRepo dep, depDir]
+              ok <- rawSystem "git" ["clone", quietness, depRepo dep, depDir]
               case ok of
                 ExitFailure {} ->
                   die
@@ -159,12 +161,12 @@ purify inputFiles config fileWatch = do
           res <-
             rawSystem
               "git"
-              ["-C", gitDir, "checkout", "-f", "-q", depCommit dep]
+              ["-C", gitDir, "checkout", "-f", quietness, depCommit dep]
           whenFailure res $
               case fetchState of
                 Pending -> do
                   putStrLn "Failed to checkout, fetching latest from remote ..."
-                  fres <- rawSystem "git" ["-C", gitDir, "fetch", "-q"]
+                  fres <- rawSystem "git" ["-C", gitDir, "fetch", quietness]
                   withErrorMsg
                     ("Tried to fetch " ++
                      depCommit dep ++
@@ -263,7 +265,7 @@ withErrorMsg :: String -> ExitCode -> IO a -> IO a
 withErrorMsg msg (ExitFailure _) _ = die msg
 withErrorMsg _ _ act               = act
 
-whenFailure :: Applicative f => ExitCode -> f () -> f ()
+whenFailure :: ExitCode -> IO () -> IO ()
 whenFailure (ExitFailure _) act = act
 whenFailure _ _                 = pure ()
 
@@ -292,7 +294,7 @@ addDeps (Purify outFile deps) newDeps autoprefix =
 
 addDep :: FilePath -- ^ out file
        -> [String] -- ^ call stack, to avoid cycles
-       -> String -- ^ new dep
+       -> String   -- ^ new dep
        -> StateT (Map String Dep) IO ()
 addDep _ depStack newDep
   | newDep `elem` depStack = error ("Dep cycle detected: " ++ show (newDep : depStack))
